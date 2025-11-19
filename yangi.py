@@ -1,14 +1,17 @@
+import os
 import sqlite3
 import telebot
+from flask import Flask, request
 from datetime import datetime, date
-import pandas as pd
-from io import BytesIO
+import csv
+from io import StringIO
 
 # ==================== KONFIGURATSIYA ====================
-TOKEN = "8467246612:AAG1DqDcuXVmdxx9e4jRl_6oMlZoxrLS0os"  # @BotFather dan oling
+TOKEN = "8467246612:AAG1DqDcuXVmdxx9e4jRl_6oMlZoxrLS0os"
 ADMINS = [530240189]  # O'zingizning Telegram ID
 
 bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
 # ==================== DATABASE ====================
 def init_database():
@@ -38,6 +41,20 @@ def get_db_connection():
 
 # ==================== MA'LUMOTLARNI SAQLASH ====================
 user_data = {}
+
+# ==================== WEBHOOK ====================
+@app.route('/')
+def home():
+    return "🤖 Bot ishlayapti! ✅"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return 'Bad request', 400
 
 # ==================== ASOSIY MENYU ====================
 @bot.message_handler(commands=['start'])
@@ -78,7 +95,6 @@ def admin_panel_access(message):
         bot.send_message(user_id, "❌ *Siz admin emassiz!*", parse_mode="Markdown")
         return
     
-    # Admin bo'lsa
     admin_panel(message)
 
 # ==================== RO'YXATDAN O'TISH ====================
@@ -116,7 +132,6 @@ def process_photo(message):
     photo_file_id = message.photo[-1].file_id
     user_data[user_id]['photo_file_id'] = photo_file_id
     
-    # Ma'lumotlarni ko'rsatish va tasdiqlash
     confirmation_text = (
         f"✅ *Ma'lumotlaringizni tekshiring:*\n\n"
         f"👤 *FISh:* {user_data[user_id]['full_name']}\n"
@@ -146,7 +161,6 @@ def handle_confirmation(call):
     user_id = call.message.chat.id
     
     if call.data == 'confirm_yes':
-        # Ma'lumotlarni bazaga saqlash
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
@@ -164,7 +178,6 @@ def handle_confirmation(call):
             ))
             conn.commit()
             
-            # Foydalanuvchiga xabar
             success_text = (
                 f"🎉 *Tabriklaymiz!*\n\n"
                 f"Ma'lumotlaringiz muvaffaqiyatli saqlandi.\n"
@@ -193,16 +206,14 @@ def handle_confirmation(call):
                     
         except Exception as e:
             bot.send_message(user_id, "❌ Ma'lumotlarni saqlashda xatolik!")
-            print(f"Database xatosi: {e}")
         finally:
             conn.close()
             
-    else:  # confirm_no
+    else:
         bot.send_message(user_id, "🔄 Ma'lumotlarni qayta kiritish boshlandi.")
         user_data[user_id] = {'step': 'full_name'}
         bot.send_message(user_id, "1️⃣ *Familiya Ism Sharifingizni* qayta kiriting:", parse_mode="Markdown")
     
-    # Callback query ni javobsiz qoldirmaslik
     bot.answer_callback_query(call.id)
 
 # ==================== ADMIN PANELI ====================
@@ -216,8 +227,7 @@ def admin_panel(message):
     
     bot.send_message(
         user_id,
-        "👨‍💼 *Admin Panel*\n\n"
-        "Quyidagi tugmalardan birini tanlang:",
+        "👨‍💼 *Admin Panel*\n\nQuyidagi tugmalardan birini tanlang:",
         parse_mode="Markdown",
         reply_markup=markup
     )
@@ -249,8 +259,7 @@ def workers_list(message):
                 f"📅 {worker['birth_date']}\n"
                 f"🏢 {worker['work_type']}\n"
                 f"💼 {worker['position']}\n"
-                f"📅 Ro'yxatdan o'tgan: {worker['registered_date'][:10]}\n"
-                f"─" * 20
+                f"📅 Ro'yxatdan o'tgan: {worker['registered_date'][:10]}"
             )
             
             if worker['photo_file_id']:
@@ -361,27 +370,69 @@ def monthly_report(message):
             bot.send_message(message.chat.id, f"📭 *{current_month}* oyi uchun hech qanday ma'lumot topilmadi")
             return
         
-        # Excel fayl yaratish
-        df = pd.DataFrame(monthly_workers, columns=['ID', 'TG ID', 'FISh', 'Tugilgan sana', 'Ish turi', 'Lavozim', 'Rasm ID', 'Roʻyxatdan oʻtgan sana'])
-        excel_buffer = BytesIO()
-        df.to_excel(excel_buffer, index=False, engine='openpyxl')
-        excel_buffer.seek(0)
+        # CSV fayl yaratish
+        csv_data = StringIO()
+        csv_writer = csv.writer(csv_data)
+        
+        # Sarlavha qator
+        csv_writer.writerow(['ID', 'TG ID', 'FISh', 'Tugilgan sana', 'Ish turi', 'Lavozim', 'Roʻyxatdan oʻtgan sana'])
+        
+        # Ma'lumotlar
+        for worker in monthly_workers:
+            csv_writer.writerow([
+                worker['id'],
+                worker['tg_id'],
+                worker['full_name'],
+                worker['birth_date'],
+                worker['work_type'],
+                worker['position'],
+                worker['registered_date']
+            ])
+        
+        csv_data.seek(0)
         
         report_text = (
             f"📈 *Oylik Hisobot - {current_month}*\n\n"
             f"📊 Jami ro'yxatdan o'tganlar: *{len(monthly_workers)} ta*\n"
-            f"📥 Excel fayl tayyorlandi"
+            f"📥 CSV fayl tayyorlandi"
         )
         
         bot.send_message(message.chat.id, report_text, parse_mode="Markdown")
-        bot.send_document(message.chat.id, excel_buffer, visible_file_name=f'hisobot_{current_month}.xlsx')
+        bot.send_document(message.chat.id, csv_data.getvalue().encode('utf-8'), visible_file_name=f'hisobot_{current_month}.csv')
         
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Oylik hisobotda xatolik: {e}")
     finally:
         conn.close()
 
+# ==================== YORDAM ====================
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    help_text = (
+        "🤖 *Bot Buyruqlari:*\n\n"
+        "/start - Botni ishga tushirish\n"
+        "/help - Yordam\n"
+        "/admin - Admin panel (faqat adminlar uchun)"
+    )
+    bot.send_message(message.chat.id, help_text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['admin'])
+def admin_command(message):
+    admin_panel_access(message)
+
+# ==================== WEBHOOK SOZLASH ====================
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    webhook_url = f"https://{request.host}/webhook"
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=webhook_url)
+        return f"✅ Webhook o'rnatildi: {webhook_url}"
+    except Exception as e:
+        return f"❌ Webhook xatosi: {e}"
+
 # ==================== BOTNI ISHGA TUSHIRISH ====================
 if __name__ == "__main__":
     print("🤖 Bot ishga tushmoqda...")
-    bot.polling(none_stop=True)
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
